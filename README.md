@@ -85,28 +85,6 @@ meaningless as a metric.
 > succeeds — the `inf` crash that broke the first full run was invisible at
 > `--nrows 20000`.
 
-## Submitting to Kaggle
-
-The token at `~/.kaggle/access_token` is the newer Bearer format (`KGAT…`), not
-the old `kaggle.json` username/key pair. The CLI reads it from an env var:
-
-```bash
-export KAGGLE_API_TOKEN=$(tr -d '\n' < ~/.kaggle/access_token)
-
-# submit (train.py names each file with its CV score)
-kaggle competitions submit \
-  -c home-credit-default-risk \
-  -f output/submission_0.79316.csv \
-  -m "XGBoost, 1775 features incl. recency/trend/cross-table"
-
-# scores appear after ~20s
-kaggle competitions submissions -c home-credit-default-risk
-```
-
-Use `.venv/bin/kaggle` if the venv is not activated. Downloading the data needs
-the same env var, plus a one-time rules acceptance on the competition page —
-without it the API returns HTTP 403.
-
 ### Reading the result
 
 The competition closed in 2018, so late submissions **score but stay
