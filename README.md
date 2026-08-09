@@ -2,7 +2,40 @@
 
 Kaggle Competition [Home Credit Default Risk](https://www.kaggle.com/competitions/home-credit-default-risk)
 
-**Result: CV AUC 0.79501, private LB 0.79606.** First place was 0.8057.
+**Result: CV AUC 0.79501, private Kaggle Leaderboard (LB) 0.79606.** First place was 0.8057.
+
+---
+
+## Contents
+
+- [1. The problem](#1-the-problem)
+- [2. The data: seven tables, one row per applicant](#2-the-data-seven-tables-one-row-per-applicant)
+  - [Two data traps worth naming](#two-data-traps-worth-naming)
+- [3. Feature engineering](#3-feature-engineering)
+  - [Hand-built ratios](#hand-built-ratios)
+  - [Time-aware features - the part that moved the score](#time-aware-features---the-part-that-moved-the-score)
+- [4. The model](#4-the-model)
+  - [Hyperparameter search](#hyperparameter-search)
+- [5. Results](#5-results)
+  - [How much of a difference is real?](#how-much-of-a-difference-is-real)
+  - [Is it overfitting?](#is-it-overfitting)
+  - [What the score means operationally](#what-the-score-means-operationally)
+  - [What the model learned](#what-the-model-learned)
+- [6. The code](#6-the-code)
+  - [Setup](#setup)
+  - [Running](#running)
+  - [The diagnostics](#the-diagnostics)
+- [7. Reading the plots](#7-reading-the-plots)
+  - [`01_learning_curves`](#01_learning_curves---train-vs-validation-auc-per-round)
+  - [`02_importance_comparison`](#02_importance_comparison---weight-vs-gain-vs-total_gain)
+  - [`03_shap_beeswarm`](#03_shap_beeswarm---direction-not-just-magnitude)
+  - [`04_shap_bar`](#04_shap_bar---mean-shap-ranking)
+  - [`05_shap_dependence`](#05_shap_dependence---the-shape-of-each-effect)
+  - [`06_roc_pr`](#06_roc_pr---the-metric-and-the-honest-one)
+  - [`07_calibration`](#07_calibration---are-the-probabilities-real)
+  - [`08_score_distribution`](#08_score_distribution---what-auc-measures-drawn)
+  - [`09_fold_stability`](#09_fold_stability---is-the-cv-number-trustworthy)
+  - [`10_tuning_history`](#10_tuning_history---has-the-search-converged)
 
 ---
 
@@ -419,3 +452,201 @@ answers one question a single CV number cannot.
 SHAP runs last in `run_all()` because it is by far the slowest step, so a failure
 there still leaves every cheaper plot on disk. It explains **held-out validation
 rows**, never training rows.
+
+## 7. Reading the plots
+
+What each figure actually shows in this run, and what to conclude from it.
+
+### `01_learning_curves` - train vs validation AUC per round
+
+![Learning curves](output/plots/01_learning_curves.png)
+
+Five panels, one per fold. Train (blue) climbs to ~0.895-0.900 while validation
+(orange) flattens near 0.79-0.80 by roughly round 1000. Final train/valid gaps
+are tight across folds: 0.104, 0.095, 0.103, 0.104, 0.099.
+
+**Interpretation.** The plateau at ~1000 rounds against best iterations of
+2916 / 2897 / 2820 / 3194 / 2683 means roughly two thirds of the trees are bought
+for almost nothing - validation AUC keeps creeping up by amounts too small to
+matter, so early stopping's 200-round patience never triggers. The ~0.10 gap is
+memorisation, but it is *stable* memorisation: the near-identical gap and
+best-iteration range across all five folds says the model is behaving
+consistently, not overfitting erratically on one split. Fold 2's higher
+validation curve is a property of that split, not of that model.
+
+**What would change the picture.** A validation curve that turned *downward*
+after the plateau would be genuine harmful overfitting and would demand a
+smaller `max_depth` or larger `min_child_weight`. It does not. So the gap is
+worth an experiment, not an emergency.
+
+### `02_importance_comparison` - weight vs gain vs total_gain
+
+![Importance comparison](output/plots/02_importance_comparison.png)
+
+Top 25 features by `total_gain`, with all three measures side by side. The
+disagreement between panels is the point.
+
+**Interpretation.** `CREDIT_TERM` has the **highest weight of any feature**
+(~1,450 splits, more than `EXT_SOURCE_MEAN`) but a modest gain of ~20. That is
+the classic high-cardinality continuous feature: it offers many candidate split
+points, so it gets chosen constantly while each individual split buys little.
+`EXT_SOURCE_MEAN` is the mirror image - fewer splits than `CREDIT_TERM` but a
+gain of ~215, an order of magnitude above everything else, and it dominates
+`total_gain` at ~255,000.
+
+`CC_CC_UTILISATION_MEDIAN_3M` is the specialist case worth noticing: near the
+**bottom on weight** (~200 splits, lowest in the panel) yet ~50 on gain, 5th
+overall. It rarely applies - only applicants with recent credit-card history -
+but when it does it is decisive. Reading weight alone would have discarded it.
+
+### `03_shap_beeswarm` - direction, not just magnitude
+
+![SHAP beeswarm](output/plots/03_shap_beeswarm.png)
+
+Each dot is one validation applicant; colour is the feature's value (red high,
+blue low), horizontal position is that feature's signed push on the prediction.
+
+**Interpretation.** `EXT_SOURCE_MEAN` shows textbook clean separation - red dots
+(high score) sit far left to -0.9, blue dots right to +1.0. High external score
+pushes predicted risk **down**, monotonically, and its spread is roughly triple
+any other feature's. `CREDIT_TERM` and `GOODS_CREDIT_RATIO` run the opposite
+direction: blue (low) sits right, so *shorter* terms and *lower* goods-to-credit
+ratios raise predicted risk.
+
+`DAYS_EMPLOYED` and `DAYS_BIRTH` are negative day-offsets, so red means recent -
+recently employed and younger applicants push risk up, which is the expected
+direction and a useful sanity check that the sentinel cleanup worked.
+`INS_DPD_TREND` appears here with red (worsening lateness) pushing right, direct
+visual confirmation that the trend features encode deterioration as intended.
+
+### `04_shap_bar` - mean |SHAP| ranking
+
+![SHAP bar](output/plots/04_shap_bar.png)
+
+The beeswarm collapsed to average magnitude, and the useful thing is that it
+**disagrees with gain**.
+
+**Interpretation.** `EXT_SOURCE_MEAN` at ~0.34 is more than three times the next
+feature (~0.10), a far more extreme concentration than gain suggested. Below it,
+ranks 2-6 are nearly tied at 0.09-0.10 (`EXT_SOURCE_2`, `CREDIT_TERM`,
+`GOODS_CREDIT_RATIO`, `EXT_SOURCE_3`, `AMT_ANNUITY`) - differences there are
+noise, not a ranking.
+
+Note `CREDIT_TERM` rises to 3rd here despite mediocre gain, and
+`BURO_CREDIT_ACTIVE_CLOSED_MAX` - 2nd by gain - **does not appear in the top 25
+at all**. Gain credits a feature at the split that used it; SHAP distributes
+credit per prediction across the whole ensemble. When the two disagree this
+sharply, the feature is contributing through interactions rather than
+standalone splits. Trust SHAP for "what drives predictions", gain for "what the
+trees found useful to split on".
+
+### `05_shap_dependence` - the shape of each effect
+
+![SHAP dependence](output/plots/05_shap_dependence.png)
+
+Six panels, each plotting a feature's value against its own SHAP contribution.
+
+**Interpretation.** Three distinct shapes appear, and they call for different
+treatment:
+
+- **`EXT_SOURCE_MEAN`** - a clean, near-linear descent from +1.0 to -0.85 with
+  tight scatter. The model treats it as a smooth continuous risk scale. Nothing
+  to improve here; binning it would only destroy information.
+- **`EXT_SOURCE_3`** - visibly *stepped*, with a drop near 0.3 and a plateau
+  past 0.5 flattening around -0.10. Beyond ~0.5 additional score buys nothing.
+  That is a threshold the trees discovered, not a linear relationship.
+- **`CREDIT_TERM`** - jagged, non-monotonic, vertical stripes of ±0.3 at nearly
+  identical x-values. The same input value maps to opposite contributions
+  depending on other features, which is the signature of a feature acting almost
+  entirely **through interactions**. This explains its weight/gain split above.
+
+`GOODS_CREDIT_RATIO` has a sharp cliff at 1.0 - the point where the loan exceeds
+the value of the goods - and the isolated marks at the far left of several
+panels are NaN rows, which SHAP attributes separately. Missingness is carrying
+its own signal, exactly as the never-impute decision intended.
+
+### `06_roc_pr` - the metric, and the honest one
+
+![ROC and PR curves](output/plots/06_roc_pr.png)
+
+**Interpretation.** The ROC curve (AUC 0.7950) rises steeply and looks strong.
+The PR curve tells the operational truth: **AP 0.2923 against a 0.081 base
+rate** - 3.6x better than random, but precision starts near 0.6, falls below 0.4
+by ~25% recall, and reaches ~0.2 at 60% recall.
+
+Concretely: to catch 60% of defaulters you accept roughly **four false positives
+for every true one**. ROC hides this because its false-positive denominator
+includes all 282,682 repaid applicants, so thousands of false positives barely
+move the x-axis. Optimise for AUC because the competition says so, but never
+quote it as a business capability.
+
+### `07_calibration` - are the probabilities real?
+
+![Calibration](output/plots/07_calibration.png)
+
+**Interpretation.** The reliability curve sits essentially **on the diagonal**
+across the full 0.00-0.40 range, with only a slight bulge near 0.08-0.10 where
+the model runs marginally hot. Applicants predicted at 0.20 default at
+approximately 20%. These are usable probabilities, not just rankings - which
+matters for expected-loss pricing, and is information AUC cannot report, since
+AUC is invariant to any monotone transform.
+
+The right panel (log-scale counts) shows why the score is hard-won: the mass is
+crushed below 0.1, thinning past 0.4, with only a handful of applicants above
+0.8. The model is confident about who is *safe* and rarely certain about who
+will default.
+
+### `08_score_distribution` - what AUC measures, drawn
+
+![Class separation](output/plots/08_score_distribution.png)
+
+Densities of predicted probability for repaid (blue, n=282,682) and defaulted
+(orange, n=24,825).
+
+**Interpretation.** The blue spike reaching density 15 below 0.05 is the model's
+real product: a large block of applicants confidently and correctly cleared. The
+orange distribution is flatter and its tail extends past 0.6, so genuine
+high-risk cases do get found.
+
+But the two distributions **overlap heavily between 0.05 and 0.25**, and that
+overlap is where nearly all the error lives. Much of it is irreducible - default
+is partly a random human event, and no feature set separates a borrower who
+loses their job next year from an identical one who does not. This picture is
+why 0.795 and the winning 0.8057 are closer than they look.
+
+### `09_fold_stability` - is the CV number trustworthy?
+
+![Fold stability](output/plots/09_fold_stability.png)
+
+Per-fold: 0.7919 / 0.8018 / 0.7918 / 0.7973 / 0.7922, mean 0.7950, std 0.0040.
+
+**Interpretation.** Folds 1, 3 and 5 are tightly clustered within 0.0004 of each
+other. Fold 2 sits ~0.006 above them and fold 4 ~0.002 above - and because fold
+2 is high on *both* train and validation in plot 01, it is an easier split
+rather than a better model.
+
+**This is the most operationally important plot.** With std 0.0040, an
+experiment that improves CV by 0.002 has produced a result well inside the noise
+of a single fold reassignment. Hence the standing rule: **treat gains under
+~0.004 as unproven** until confirmed on the LB or across seeds. The +0.0026 from
+time-aware features only counts because the private LB confirmed it
+independently.
+
+### `10_tuning_history` - has the search converged?
+
+![Tuning history](output/plots/10_tuning_history.png)
+
+25 completed trials (15 more pruned), best-so-far in orange.
+
+**Interpretation.** The curve makes almost all of its progress by trial 12 and
+then flattens - two marginal improvements after that, ending at **0.757975**
+(trial 33). Total spread across completed trials is roughly 0.7527 to 0.7580, so
+**the entire searched space is worth ~0.005**, and the last dozen trials bought
+~0.0004 between them.
+
+The flattening is the signal to stop: more trials in these ranges will not pay.
+Compare against the feature work - the time-aware groups moved the private LB
+0.0026 on their own. **Features were worth far more than hyperparameters here**,
+and this plot is the evidence. Absolute values are ~0.037 below the full-run CV
+because the search uses 3 folds on 60k rows; only the *ranking* needs to survive
+that reduction, and it does.
