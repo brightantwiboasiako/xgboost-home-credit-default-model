@@ -21,10 +21,12 @@ output/
 
 ## Current result
 
-**CV AUC 0.7932** (5-fold, 307,507 rows x 1,674 features, ~23 min).
-Per-fold: 0.7887 / 0.7988 / 0.7913 / 0.7955 / 0.7916 — spread of 0.010, so
-improvements smaller than ~0.003 are within fold noise and need multiple seeds
-to confirm.
+**CV AUC 0.79501**, **private LB 0.79606** (5-fold, 307,507 rows x 1,775
+features, ~24 min). Per-fold: 0.7919 / 0.8018 / 0.7918 / 0.7973 / 0.7922 —
+std 0.0040, so improvements smaller than ~0.004 need LB or multi-seed
+confirmation before you believe them.
+
+1st place on the private LB was 0.8057.
 
 ## Data model
 
@@ -66,7 +68,7 @@ All commands below assume one of those.
 # fast smoke test (~30s) — exercises the whole pipeline including plots
 python src/train.py --nrows 30000 --folds 3 --rounds 150 --shap-sample 800
 
-# full run (~23 min)
+# full run (~24 min, plus ~2 min for SHAP)
 python src/train.py
 
 # skip diagnostics while iterating on features
@@ -102,11 +104,76 @@ time) ranks 9th of 1,775 features, so deterioration in payment behaviour was
 genuinely missing from the lifetime aggregates.
 
 CV tracks the private LB to within 0.001 and slightly understates it, so
-iterate against CV and submit only to confirm.
+iterate against CV and submit only to confirm. **Trust CV over the public LB** —
+the public split is only ~9,700 rows and its noise is comparable to the fold
+spread, so chasing it means fitting noise.
 
-CV and private LB agree to 0.0003, so **trust CV over the public LB**. The
-public split is only ~9,700 rows and its noise is comparable to the 0.010 fold
-spread — chasing it means fitting noise.
+### What the current model looks like
+
+All plots below are from the 0.79501 run (1,775 features, 5-fold).
+
+**Fold stability** — mean 0.7950, std 0.0040. Fold 2 sits ~0.006 above the
+others, so it is an easier split rather than the model being unstable. Practical
+consequence: treat gains under ~0.004 as unproven until confirmed on the LB or
+across seeds.
+
+![Fold stability](output/plots/09_fold_stability.png)
+
+**Learning curves** — validation plateaus around round 1000 while training keeps
+climbing to a final gap of ~0.10. Everything after the plateau is memorisation,
+not learning. Early stopping still runs to ~2,800 rounds because validation AUC
+technically drifts up by tiny amounts, so most of those trees buy almost
+nothing. A larger `min_child_weight` or lower `max_depth` would close the gap;
+whether that helps AUC is worth testing.
+
+![Learning curves](output/plots/01_learning_curves.png)
+
+**Calibration** — the model sits essentially on the diagonal across the whole
+range. Predicted probabilities are usable as actual probabilities, not just as a
+ranking, which matters if the scores ever feed expected-loss pricing. Note AUC
+would be unchanged by any monotone transform, so this is information the metric
+cannot tell you.
+
+![Calibration](output/plots/07_calibration.png)
+
+**Class separation** — what AUC measures, drawn directly. The blue spike below
+0.05 is a large block of applicants the model confidently and correctly clears.
+The orange tail reaches 0.8, so genuine high-risk cases are found. The overlap
+between 0.05 and 0.25 is where the remaining error lives, and much of it is
+irreducible: default is partly a random human event, and 1st place only reached
+0.8057.
+
+![Class separation](output/plots/08_score_distribution.png)
+
+**Threshold behaviour** — ROC AUC 0.7950 is the competition metric, but the PR
+curve is the operationally honest one: average precision is 0.2923 against a
+0.081 base rate. Roughly 3.6x better than random, yet precision falls below 0.4
+by 25% recall. Catching most defaulters means accepting many false positives —
+a fact the ROC curve's large false-positive denominator hides.
+
+![ROC and PR curves](output/plots/06_roc_pr.png)
+
+**Feature importance and direction** — `total_gain` is the most honest single
+ranking; SHAP adds the direction that no importance measure conveys (high
+`EXT_SOURCE_MEAN` sits left of zero, pushing risk down).
+
+![Importance comparison](output/plots/02_importance_comparison.png)
+
+![SHAP beeswarm](output/plots/03_shap_beeswarm.png)
+
+**SHAP dependence** — the shape of each top feature's effect, which the beeswarm
+compresses away. `EXT_SOURCE_MEAN` is cleanly monotonic and near-linear, so the
+model treats it as a smooth risk scale. `EXT_SOURCE_3` instead shows a step near
+0.3 and a plateau past 0.5 — a threshold the trees discovered, beyond which more
+score buys nothing. `CREDIT_TERM` is jagged and non-monotonic, the signature of
+a feature the model splits on repeatedly in interaction with others rather than
+reading off directly.
+
+Vertical stripes at the far left of several panels are the NaN rows, which SHAP
+places separately — visible confirmation that missingness carries its own
+attribution rather than being silently imputed.
+
+![SHAP dependence](output/plots/05_shap_dependence.png)
 
 ## Diagnostics
 
