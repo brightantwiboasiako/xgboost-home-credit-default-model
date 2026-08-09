@@ -1,5 +1,12 @@
 data/
-output/
+
+# Ignore generated output, except the plots the README embeds.
+# Directories must be un-ignored before git will look inside them.
+!output/
+output/*
+!output/plots/
+output/plots/*
+!output/plots/*.png
 .venv/
 __pycache__/
 *.pyc
