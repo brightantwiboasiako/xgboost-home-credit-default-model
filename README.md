@@ -1,17 +1,6 @@
 # Home Credit Default Risk — XGBoost
 
 Kaggle competition ([link](https://www.kaggle.com/competitions/home-credit-default-risk)),
-closed, $70,000 prize pool, ~7,200 teams. Predict whether a loan applicant will
-default. Scored by **ROC AUC**.
-
-Late submissions still score against the public/private leaderboard, so the
-feedback signal is intact — there is no payout and no official standing.
-
-## Why this competition
-
-The difficulty is feature engineering, not tuning. Only ~8% of the signal sits
-in the main application table; the rest has to be pulled out of 7 auxiliary
-tables that are many-rows-per-applicant and joined down to one row each.
 
 ## Layout
 
